@@ -1,0 +1,56 @@
+stages:
+  - build
+  - test
+  - docker-build
+  - deploy
+
+build:
+  stage: build
+  image: node
+  script:
+    - echo "Start building App"
+    - npm install
+    - npm build
+    - echo "Build successfully!"
+  artifacts:
+    expire_in: 1 hour
+    paths:
+      - build
+      - node_modules/
+
+test:
+  stage: test
+  image: node
+  script:
+    - echo "Testing App"
+    - CI=true npm test --passWithNoTests
+    - echo "Test successfully!"
+
+docker-build:
+  stage: docker-build
+  image: docker:stable
+  services:
+    - name: docker:19.03.8-dind
+  before_script:
+    - source .${CI_COMMIT_REF_NAME}.env
+  script:
+    - docker build -t $DOCKER_REPO .
+    - docker login -u $DOCKER_USER -p $DOCKER_PASSWORD docker.io
+    - docker push $DOCKER_REPO
+
+deploy:
+  stage: deploy
+  image: ubuntu:latest
+  before_script:
+    - 'which ssh-agent || ( apt-get update -y && apt-get install openssh-client -y )'
+    - mkdir -p ~/.ssh
+    - chmod 755 ~/.ssh
+    - echo "$PROD_SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - eval "$(ssh-agent -s)"
+    - ssh-add ~/.ssh/id_rsa
+    - ssh-keyscan -H 'gitlab.enterpriselab.ch' >> ~/.ssh/known_hosts
+    - echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
+    - source .${CI_COMMIT_REF_NAME}.env
+  script:
+    - ssh localadmin@$SERVER_NAME "docker login -u $DOCKER_USER -p $DOCKER_PASSWORD docker.io; docker stop $APP_NAME; docker system prune -a -f; docker pull $DOCKER_REPO; docker container run -d --name $APP_NAME -p $PORT:$PORT --network springbootbackend_default $DOCKER_REPO; docker logout;"

@@ -1,0 +1,41 @@
+services:
+  - docker:19.03.8-dind
+stages:
+  - build jar
+  - build and push docker image
+  - deploy
+build:
+  image: maven:3.6.3-jdk-11-slim
+  stage: build jar
+  before_script:
+    - source .${CI_COMMIT_REF_NAME}.env
+  script:
+    - mvn clean install -Dspring.profiles.active=$SPRING_ACTIVE_PROFILE && mvn package -B -e -Dspring.profiles.active=$SPRING_ACTIVE_PROFILE
+  artifacts:
+    paths:
+      - target/*.jar
+docker build:
+  image: docker:stable
+  stage: build and push docker image
+  before_script:
+    - source .${CI_COMMIT_REF_NAME}.env
+  script:
+    - docker build --build-arg SPRING_ACTIVE_PROFILE=$SPRING_ACTIVE_PROFILE -t $DOCKER_REPO .
+    - docker login -u $DOCKER_USER -p $DOCKER_PASSWORD docker.io
+    - docker push $DOCKER_REPO
+deploy:
+  image: ubuntu:latest
+  stage: deploy
+  before_script:
+    - 'which ssh-agent || ( apt-get update -y && apt-get install openssh-client -y )'
+    - mkdir -p ~/.ssh
+    - chmod 755 ~/.ssh
+    - echo "$PROD_SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - eval "$(ssh-agent -s)"
+    - ssh-add ~/.ssh/id_rsa
+    - ssh-keyscan -H 'gitlab.enterpriselab.ch' >> ~/.ssh/known_hosts
+    - echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
+    - source .${CI_COMMIT_REF_NAME}.env
+  script:
+    - ssh localadmin@$SERVER_NAME "docker login -u $DOCKER_USER -p $DOCKER_PASSWORD docker.io; docker stop $APP_NAME; docker stop mariadb; docker system prune -a -f; docker network create --driver bridge springbootbackend_default; docker pull mariadb:10; docker container run --name mariadb -p 3006:3006 --network springbootbackend_default -v "/home/localadmin/electrolernappDatabase/:/var/lib/mysql" -e MYSQL_ROOT_PASSWORD=XXX -e MYSQL_DATABASE=db_electrolernapp -e TZ=Europe/Paris -d mariadb:10; docker pull $DOCKER_REPO; docker container run -d --name $APP_NAME -p $PORT:8080 --network springbootbackend_default -v "/home/localadmin/springbootBackendData/:/var" -e SPRING_PROFILES_ACTIVE=$SPRING_ACTIVE_PROFILE $DOCKER_REPO; docker logout"
